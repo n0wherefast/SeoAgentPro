@@ -1,0 +1,63 @@
+# Node
+node_modules/
+.next/
+.env
+.env.*
+.DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+SEO-AGENT/
+MIGRATION_GUIDE.md
+seo_detector.py.deprecated
+test.ipynb 
+test_engines.py
+test_ranking.py
+test_competitor.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+*.venv
+venv/
+ENV/
+env/
+.venv/
+
+# VSCode
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build
+build/
+dist/
+
+# Reports
+backend/reports/
+
+# Virtual Envs
+backend/seo-venv/
+backend/seo-venv-new/
+
+# Misc
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# Frontend build
+frontend/seo-dashboard/.next/
+frontend/seo-dashboard/node_modules/
+frontend/seo-dashboard/out/
