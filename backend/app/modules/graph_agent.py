@@ -17,6 +17,7 @@ from app.modules.graph_tools import (
     analyze_competitors_pure,
     calculate_seo_score,
 )
+from app.modules.seo_technical import analyze_sitemap
 from app.core.llm_factory import get_shared_llm
 
 
@@ -157,6 +158,20 @@ class GraphAuditOrchestrator:
         self.state["seo_data"] = seo_data
         self._log("extract", "Estrazione completata", "extract_seo_elements_pure", status="done")
         yield sse("log", self.state["logs"][-1])
+
+        # Sitemap analysis (streamed): se presente una sitemap_url, analizzala e invia evento separato
+        try:
+            sitemap_url = seo_data.get("sitemap_url") if isinstance(seo_data, dict) else None
+            if sitemap_url:
+                sitemap_analysis = analyze_sitemap(sitemap_url)
+                self.state["sitemap_analysis"] = sitemap_analysis
+                yield sse("sitemap_analysis", sitemap_analysis)
+                # anche log dell'operazione
+                self._log("sitemap", f"Sitemap analysis inviata per {sitemap_url}", "analyze_sitemap", status="done")
+                yield sse("log", self.state["logs"][-1])
+        except Exception as e:
+            self._log("sitemap", f"Errore sitemap analysis: {str(e)}", "analyze_sitemap", status="error")
+            yield sse("log", self.state["logs"][-1])
 
         # Analyze
         self._log("analyze", "Analisi issues e sicurezza", "detect_seo_issues_pure")
