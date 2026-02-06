@@ -1,5 +1,9 @@
+import logging
+
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.llm_factory import get_shared_llm
+
+logger = logging.getLogger(__name__)
 
 STRATEGY_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
@@ -136,8 +140,8 @@ def generate_strategy(scan: dict, competitor: dict, compare: dict):
             overlap_str += f" (+{len(keyword_overlap) - 10} altre)"
         
         # Debug log
-        print(f"[DEBUG] AI Strategy input: my={my_score}, comp={comp_score}")
-        print(f"[DEBUG] Keywords gap: {gap_str[:100]}...")
+        logger.debug("AI Strategy input: my=%s, comp=%s", my_score, comp_score)
+        logger.debug("Keywords gap: %s...", gap_str[:100])
         
         llm = get_shared_llm()
         messages = STRATEGY_PROMPT.format_messages(
@@ -156,5 +160,5 @@ def generate_strategy(scan: dict, competitor: dict, compare: dict):
         res = llm.invoke(messages)
         return res.content
     except Exception as e:
-        print(f"[ERROR] generate_strategy failed: {e}")
+        logger.error("generate_strategy failed: %s", e)
         return f"Strategy generation failed: {str(e)[:200]}"

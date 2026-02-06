@@ -4,12 +4,15 @@ Combines 22 detailed rules from seo_detector.py with LLM-powered fix generation.
 This replaces the need for both seo_detector.py and graph_tools.detect_seo_issues_pure()
 """
 
+import logging
 from typing import Dict, List
 import re
 from collections import Counter
 
 # Import helper for LLM fixes
 from app.core.llm_factory import get_shared_llm
+
+logger = logging.getLogger(__name__)
 
 
 def detect_seo_issues_unified(scraped: Dict) -> List[Dict]:
@@ -467,5 +470,5 @@ def generate_llm_fixes_for_issues(issues: List[Dict], page_data: Dict) -> List[D
         
         return result if isinstance(result, list) else [result]
     except Exception as e:
-        print(f"[ERROR] LLM fix generation failed: {e}")
+        logger.error("LLM fix generation failed: %s", e)
         return []

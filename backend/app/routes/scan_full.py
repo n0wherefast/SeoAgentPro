@@ -10,12 +10,14 @@ from app.modules.authority_engine import run_authority_engine
 from app.modules.seo_rules import SEOScoringEngine
 from app.modules.competitor.ranking import rank_competitor, compute_simple_scores
 from app.modules.competitor.radar import radar_payload
+from app.utils.validators import validate_url
 import os
 import json
 import time
 import asyncio
 import logging
 import re
+import itertools
 
 # Lazy imports for AI modules (imported only when needed)
 # This reduces startup time and memory footprint for simple scans
@@ -23,6 +25,9 @@ import re
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Global SSE event counter
+_sse_counter = itertools.count(1)
 
 # =========================
 # 🔹 KEYWORD ANALYSIS HELPER
@@ -90,20 +95,6 @@ def analyze_keyword_presence(scraped: dict, keywords: list) -> dict:
     }
 
 # =========================
-# 🔹 CORS OPTIONS PREFLIGHT
-# =========================
-@router.options("/scan-full/stream")
-async def options_scan_full():
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        }
-    )
-
-# =========================
 # 🔹 STREAMING SSE VERSION
 # =========================
 @router.get("/scan-full/stream")
@@ -115,12 +106,19 @@ async def scan_full_stream(
 ):
     # Parse keywords from comma-separated string
     target_keywords = [k.strip() for k in (keywords or "").split(",") if k.strip()]
+
+    # Validate URLs
+    try:
+        url = validate_url(url)
+        if competitor_url:
+            competitor_url = validate_url(competitor_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     
     async def event_generator():
         try:
             # Log parameters per debug
             logger.info(f"🔍 SCAN-FULL START: url={url}, competitor_url={competitor_url}, keywords={target_keywords}")
-            print(f"\n\n🔍🔍🔍 SCAN-FULL START: url={url}, competitor_url={competitor_url}, keywords={target_keywords}\n\n")
             
             # 1) SCRAPE
             scraped = smart_scrape_url(url)
@@ -141,9 +139,6 @@ async def scan_full_stream(
                 keyword_presence = analyze_keyword_presence(scraped, target_keywords)
                 yield sse("keyword_analysis", keyword_presence)
 
-            yield sse("technical", technical)
-            technical = run_technical_checks(scraped, url)
-            technical_errors = technical["technical_errors"]
             yield sse("technical", technical)
 
             # 3b) SITEMAP ANALYSIS (come in agent_scan)
@@ -167,9 +162,9 @@ async def scan_full_stream(
             try:
                 performance = run_performance_engine(url)
                 perf_score = performance.get("performance_score")
-                print(f"[DEBUG] PERFORMANCE: score={perf_score}, full_data={performance}")
+                logger.info(f"PERFORMANCE: score={perf_score}")
             except Exception as e:
-                print(f"[ERROR] PERFORMANCE failed: {e}")
+                logger.error(f"PERFORMANCE failed: {e}")
                 performance = {"performance_score": None, "metrics": {}, "error": str(e)}
             yield sse("performance", performance)
 
@@ -177,9 +172,9 @@ async def scan_full_stream(
             try:
                 authority = run_authority_engine(scraped, None)
                 auth_score = authority.get("your_authority")
-                print(f"[DEBUG] AUTHORITY: score={auth_score}, full_data={authority}")
+                logger.info(f"AUTHORITY: score={auth_score}")
             except Exception as e:
-                print(f"[ERROR] AUTHORITY failed: {e}")
+                logger.error(f"AUTHORITY failed: {e}")
                 authority = {"your_authority": None, "competitor_authority": None, "error": str(e)}
             yield sse("authority", authority)
 
@@ -217,11 +212,10 @@ async def scan_full_stream(
             try:
                 from app.modules.ai_roadmap_agent import generate_roadmap
                 ai_roadmap = generate_roadmap(all_errors, scraped)
-                print(f"[DEBUG] AI_ROADMAP generated successfully")
+                logger.info("AI_ROADMAP generated successfully")
                 yield sse("ai_roadmap", ai_roadmap)
             except Exception as e:
-                print(f"[ERROR] AI_ROADMAP FAILED: {type(e).__name__}: {str(e)}")
-                logger.error(f"❌ ai_roadmap failed: {e}", exc_info=True)
+                logger.error(f"ai_roadmap failed: {type(e).__name__}: {e}", exc_info=True)
                 yield sse("ai_roadmap", f"Roadmap generation failed: {str(e)[:200]}")
 
             # 8) COMPETITOR ANALYSIS (optional - lazy loaded)
@@ -232,7 +226,6 @@ async def scan_full_stream(
             
             if competitor_url:
                 logger.info(f"✅ COMPETITOR ANALYSIS STARTED for {competitor_url}")
-                print(f"\n\n✅✅✅ COMPETITOR ANALYSIS STARTED for {competitor_url}\n\n")
                 competitor_scraped = smart_scrape_url(competitor_url)
                 
                 # Arricchisci scraped con dati aggiuntivi per ranking
@@ -339,8 +332,34 @@ async def scan_full_stream(
                     logger.error(f"❌ ai_strategy failed: {e}")
                     yield sse("ai_strategy", f"Strategy generation failed: {str(e)[:200]}")
 
-            # 9) DONE
-            yield sse("done", {"status": "completed"})
+            # 9) STORE SCAN RESULTS IN RAG
+            stored_scan_id = None
+            try:
+                from app.modules.scan_store import store_scan_result
+                from urllib.parse import urlparse as _urlparse
+                stored_scan_id = store_scan_result(
+                    url=url,
+                    scraped=scraped,
+                    errors=all_errors,
+                    seo_score=seo_score,
+                    technical=technical,
+                    performance=performance if 'performance' in dir() else None,
+                    authority=authority if 'authority' in dir() else None,
+                    ai_autofix=ai_autofix if isinstance(ai_autofix, str) else None,
+                    ai_roadmap=ai_roadmap if isinstance(ai_roadmap, str) else None,
+                )
+                logger.info("📦 Scan stored in RAG: scan_id=%s", stored_scan_id)
+            except Exception as e:
+                logger.error("Failed to store scan in RAG: %s", e)
+
+            # 10) DONE — include scan_id so frontend can reference it in chat
+            done_payload = {"status": "completed"}
+            if stored_scan_id:
+                from urllib.parse import urlparse as _urlparse2
+                done_payload["scan_id"] = stored_scan_id
+                done_payload["domain"] = _urlparse2(url).netloc
+                done_payload["url"] = url
+            yield sse("done", done_payload)
             logger.info("✅ SCAN-FULL COMPLETED")
 
         except Exception as e:
@@ -353,9 +372,6 @@ async def scan_full_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
         },
     )
 
@@ -365,25 +381,21 @@ async def scan_full_stream(
 # =========================
 def sse(event: str, data):
     """
-    Formato SSE: event: xxx\ndata: {...json...}\n\n
-    Assicura che data sia sempre una struttura valida (dict o string wrappato in dict)
+    Formato SSE con event-id e retry per supportare resume dopo disconnessione.
     """
     try:
-        # Se data è una stringa, wrappala in un dict
+        event_id = next(_sse_counter)
         if isinstance(data, str):
             payload = {"content": data}
-        # Se è già un dict o una lista, serializza direttamente
         elif isinstance(data, (dict, list)):
             payload = data
         else:
-            # Fallback: stringify
             payload = {"content": str(data)}
 
         json_str = json.dumps(payload, ensure_ascii=False)
-        return f"event: {event}\ndata: {json_str}\n\n"
+        return f"id: {event_id}\nretry: 5000\nevent: {event}\ndata: {json_str}\n\n"
     except Exception as e:
-        print(f"[ERROR] SSE serialization failed for event '{event}': {e}")
-        # Fallback: ritorna un dict di errore
+        logger.error(f"SSE serialization failed for event '{event}': {e}")
         fallback = {"content": f"Error in {event}: {str(e)[:100]}"}
         json_str = json.dumps(fallback, ensure_ascii=False)
         return f"event: {event}\ndata: {json_str}\n\n"

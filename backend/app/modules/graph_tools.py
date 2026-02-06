@@ -5,6 +5,7 @@
 import os
 import re
 import json
+import logging
 from collections import Counter
 from datetime import datetime
 import httpx
@@ -18,6 +19,9 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.core.llm_factory import get_shared_llm
 from urllib.parse import urljoin
 from app.modules.seo_technical import check_sitemap
+
+logger = logging.getLogger(__name__)
+
 # =========================
 # CONFIGURAZIONE
 # =========================
@@ -27,12 +31,18 @@ try:
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
-    print("⚠️ Playwright non trovato. Installalo con 'pip install playwright' e 'playwright install'.")
+    logger.warning("Playwright non trovato. Installalo con 'pip install playwright' e 'playwright install'.")
 
 load_dotenv()
 
-# Tool di ricerca per trovare competitor
-tavily_search = TavilySearch(max_results=5)
+# Tool di ricerca per trovare competitor (lazy init to avoid crash if TAVILY_API_KEY not yet loaded)
+_tavily_search = None
+
+def _get_tavily_search():
+    global _tavily_search
+    if _tavily_search is None:
+        _tavily_search = TavilySearch(max_results=5)
+    return _tavily_search
 
 
 # =========================
@@ -72,7 +82,7 @@ def fetch_page_playwright(url: str) -> str:
     # Nota: Ho rimosso il check su PLAYWRIGHT_AVAILABLE per brevità, assumendo sia gestito
     from playwright.sync_api import sync_playwright
         
-    print(f"--- 🎭 Avvio Playwright per: {url} ---")
+    logger.info("Avvio Playwright per: %s", url)
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -108,7 +118,7 @@ def fetch_page_pure(url: str) -> str:
     }
     
     try:
-        with httpx.Client(http2=False, follow_redirects=True, timeout=15.0, verify=False) as client:
+        with httpx.Client(http2=False, follow_redirects=True, timeout=15.0) as client:
             resp = client.get(url, headers=headers)
             resp.raise_for_status()
             html_content = resp.text
@@ -116,27 +126,27 @@ def fetch_page_pure(url: str) -> str:
             if not html_content:
                 return f"ERROR: Pagina vuota {url}"
 
-            print(f"✅ Download HTTPX completato. Lunghezza: {len(html_content)}")
+            logger.info("Download HTTPX completato. Lunghezza: %d", len(html_content))
             return html_content
     except Exception as e:
-        print(f"❌ Fetch HTTPX fallito: {e}")
+        logger.warning("Fetch HTTPX fallito: %s", e)
 
         # Fallback con requests (più permissivo su alcuni siti)
         try:
-            resp = requests.get(url, headers=headers, timeout=15, verify=False)
+            resp = requests.get(url, headers=headers, timeout=15)
             resp.raise_for_status()
             html_content = resp.text
             if html_content:
-                print(f"✅ Download requests completato. Lunghezza: {len(html_content)}")
+                logger.info("Download requests completato. Lunghezza: %d", len(html_content))
                 return html_content
         except Exception as re:
-            print(f"❌ Fetch requests fallito: {re}")
+            logger.warning("Fetch requests fallito: %s", re)
 
         if PLAYWRIGHT_AVAILABLE:
-            print("🎭 Tentativo fallback Playwright...")
+            logger.info("Tentativo fallback Playwright...")
             pw_html = fetch_page_playwright(url)
             if pw_html and not pw_html.startswith("ERROR:"):
-                print(f"✅ Download Playwright completato. Lunghezza: {len(pw_html)}")
+                logger.info("Download Playwright completato. Lunghezza: %d", len(pw_html))
                 return pw_html
             return f"ERROR: Impossibile scaricare {url}: {pw_html}"
         return f"ERROR: Impossibile scaricare {url}: {str(e)}"
@@ -291,64 +301,18 @@ def extract_seo_elements_pure(html: str, url: str, soup: BeautifulSoup, response
         "has_https": url.startswith("https"),
         "text_sample": text_content[:2000]
     }
-    print("[extract_seo_elements_pure] Dati estratti:", json.dumps(result, ensure_ascii=False, indent=2))
+    logger.debug("[extract_seo_elements_pure] Dati estratti: %s", json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
 
 
 def detect_seo_issues_pure(seo_data: dict) -> list:
-    """Analisi approfondita con 20+ controlli SEO."""
-    if not seo_data:
-        return []
-
-    issues = []
-    
-    def add_issue(id, cat, desc, penalty=10):
-        issues.append({"id": id, "category": cat, "description": desc, "penalty": penalty})
-
-    title = seo_data.get("title")
-    if not title:
-        add_issue("missing_title", "critical", "Manca il Tag <title>. È il fattore on-page più importante.")
-    elif len(title) < 10:
-        add_issue("short_title", "content", f"Title troppo breve ({len(title)} chars). Sfrutta tutto lo spazio (50-60 chars).")
-    elif len(title) > 65:
-        add_issue("long_title", "content", f"Title troppo lungo ({len(title)} chars). Verrà troncato nelle SERP.")
-
-    desc = seo_data.get("meta_description")
-    if not desc:
-        add_issue("missing_meta_desc", "content", "Manca la Meta Description. Riduce il CTR nei risultati di ricerca.")
-    elif len(desc) < 50:
-        add_issue("short_meta_desc", "content", "Meta Description troppo breve. Non invoglia al clic.")
-
-    h1s = seo_data.get("headings", {}).get("h1", [])
-    if not h1s:
-        add_issue("missing_h1", "technical", "Manca il tag H1. Google faticherà a capire l'argomento principale.")
-    elif len(h1s) > 1:
-        add_issue("multiple_h1", "technical", f"Trovati {len(h1s)} tag H1. Usa un solo H1 per pagina per chiarezza semantica.")
-
-    word_count = seo_data.get("word_count", 0)
-    if word_count < 300:
-        add_issue("thin_content", "content", f"Contenuto scarso ({word_count} parole). Google penalizza le pagine 'thin content'.")
-
-    missing_alt = seo_data.get("missing_alt_count", 0)
-    if missing_alt > 0:
-        add_issue("missing_alt", "accessibility", f"{missing_alt} immagini mancano di attributo ALT (testo alternativo).")
-
-    page_size = seo_data.get("page_size_kb", 0)
-    if page_size > 2000:
-        add_issue("heavy_page", "performance", f"Il codice HTML è molto pesante ({int(page_size)}KB). Rallenta il caricamento.")
-
-    if not seo_data.get("canonical"):
-        add_issue("missing_canonical", "technical", "Manca il tag Canonical. Rischio duplicazione contenuti.")
-    
-    og_title = seo_data.get("social_tags", {}).get("og:title")
-    if not og_title:
-        add_issue("missing_og_tags", "social", "Mancano i tag Open Graph. La condivisione sui social non avrà anteprima.")
-
-    if seo_data.get("links_internal", 0) < 3:
-        add_issue("orphan_risk", "structure", "Pochi link interni. La pagina rischia di essere isolata (Orphan Page).")
-
-    return issues
+    """
+    Delegated to the unified detection module to avoid code duplication.
+    This wrapper maintains backward compatibility for graph_tools callers.
+    """
+    from app.modules.seo_detection_unified import detect_seo_issues_unified
+    return detect_seo_issues_unified(seo_data)
 
 
 def generate_fixes_pure(
@@ -361,76 +325,131 @@ def generate_fixes_pure(
     if not issues:
         return []
 
-    from langchain_core.output_parsers import JsonOutputParser
-    from langchain_core.prompts import PromptTemplate
-
-    parser = JsonOutputParser()
-
-    prompt = PromptTemplate(
-        template="""Sei un Esperto SEO Tecnico e Sviluppatore Web Senior. 
-        
-        CONTESTO SITO:
-        - URL Reale: {user_url}
-        - Stack / Framework: {tech_stack}
-        - Estratto Contenuto: "{text_sample}..." (Usa questo contesto per scrivere fix pertinenti al settore)
-        
-        PROBLEMI RILEVATI:
-        {issues}
-        
-        TASK:
-        Per OGNI problema, fornisci una soluzione tecnica dettagliata in formato JSON.
-        
-          REGOLE CRITICHE:
-        1. Usa SEMPRE l'URL reale "{user_url}" nei tag canonical, og:url, ecc.
-        2. NON usare mai "www.esempio.com" o "tuosito.com".
-        3. Inventate ALT text realistici basati sul testo estratto.
-          4. Adatta il codice allo stack dichiarato (deve essere incollabile):
-               - Se include "Next.js" o "React": usa JSX/TSX. Per meta/OG usa `next/head` (Pages) oppure l'export `metadata`/`generateMetadata` (App Router). Per API usa route handler in `app/api/.../route.ts` o API routes Pages. Per immagini usa SEMPRE `<Image />` da `next/image` (con import relativo) e non `<img>`. Evita tag HTML nudi se esiste una soluzione framework.
-              - Se include "WordPress": fornisci snippet PHP per functions.php/template con hook corretti o blocchi HTML/PHP contestuali.
-              - Se include "Shopify"/"Liquid": fornisci blocchi Liquid + HTML/CSS.
-              - Se include "Vue"/"Nuxt": fornisci SFC (template+script) o composables.
-              - Altrimenti fornisci HTML/CSS/JS vanilla.
-          5. FORNISCI IL CODICE COMPLETO per ogni problema da copiare-incollare.
-        
-        FORMATO RISPOSTA (Lista JSON pura):
-        {{
-            "issue_id": "copia l'id del problema",
-            "explanation": "Spiegazione tecnica del perché è un problema (max 2 frasi)",
-            "code_snippet": "Codice HTML/JS/Config corretto da copiare-incollare."
-        }}
-        
-        {format_instructions}
-        """,
-        input_variables=["issues", "user_url", "text_sample", "tech_stack"],
-        partial_variables={"format_instructions": parser.get_format_instructions()},
-    )
-
-    chain = prompt | get_shared_llm() | parser
+    llm = get_shared_llm()
     issues_str = json.dumps(issues, indent=2)
     safe_sample = text_sample[:500].replace("\n", " ") if text_sample else "Nessun testo estratto."
 
+    system_prompt = f"""Sei un Esperto SEO Tecnico e Sviluppatore Web Senior.
+
+CONTESTO SITO:
+- URL Reale: {user_url}
+- Stack / Framework: {tech_stack}
+- Estratto Contenuto: "{safe_sample}..."
+
+TASK:
+Per OGNI problema fornito, genera una soluzione tecnica dettagliata.
+
+REGOLE CRITICHE:
+1. Usa SEMPRE l'URL reale "{user_url}" nei tag canonical, og:url, ecc.
+2. NON usare mai "www.esempio.com" o "tuosito.com".
+3. Inventa ALT text realistici basati sul testo estratto.
+4. Adatta il codice allo stack dichiarato ({tech_stack}):
+   - Next.js/React: JSX/TSX con next/head o export metadata.
+   - WordPress: snippet PHP per functions.php con hook.
+   - Shopify/Liquid: blocchi Liquid + HTML/CSS.
+   - Vue/Nuxt: SFC (template+script) o composables.
+   - Altrimenti HTML/CSS/JS vanilla.
+5. FORNISCI CODICE COMPLETO copia-incollabile per ogni problema.
+
+Rispondi SOLO con un array JSON valido. Ogni elemento deve avere:
+- "issue_id": stringa, copia l'id del problema
+- "explanation": stringa, spiegazione tecnica (max 2 frasi)
+- "code_snippet": stringa, codice HTML/JS/Config corretto
+
+ESEMPIO FORMATO (Array JSON):
+[
+  {{"issue_id": "missing_meta", "explanation": "La meta description mancante riduce il CTR.", "code_snippet": "<meta name=\\"description\\" content=\\"...\\">"}}
+]
+
+IMPORTANTE: Rispondi SOLO con l'array JSON. Nessun testo prima o dopo. Nessun markdown. Solo JSON puro."""
+
+    user_prompt = f"PROBLEMI RILEVATI:\n{issues_str}\n\nGenera i fix ora come array JSON puro."
+
     try:
-        result = chain.invoke({
-            "issues": issues_str,
-            "user_url": user_url,
-            "text_sample": safe_sample,
-            "tech_stack": tech_stack,
-        })
-        # Assicura che ritorna sempre una lista
-        if isinstance(result, list):
+        from langchain_core.messages import SystemMessage, HumanMessage
+        response = llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+        raw = response.content.strip()
+
+        # Try to extract JSON from response (handle markdown code blocks)
+        result = _extract_json_list(raw)
+        if result is not None:
             return result
-        elif isinstance(result, dict):
-            return [result]
-        else:
-            print(f"[ERROR] Unexpected fix result type: {type(result)}, value: {result}")
-            return []
+
+        logger.error("Could not parse fixes JSON. Raw response (first 500): %s", raw[:500])
+        return [{
+            "issue_id": "ai_parse_error",
+            "explanation": "L'AI ha generato una risposta non parsabile. Riprova la scansione.",
+            "code_snippet": "",
+        }]
+
     except Exception as e:
-        print(f"[ERROR] Exception in generate_fixes_pure: {e}")
+        logger.error("Exception in generate_fixes_pure: %s", e)
         return [{
             "issue_id": "ai_error",
-            "explanation": f"Errore generazione fix: {str(e)}",
+            "explanation": f"Errore generazione fix: {str(e)[:200]}",
             "code_snippet": ""
         }]
+
+
+def _extract_json_list(text: str) -> list | None:
+    """
+    Robust JSON list extraction from LLM output.
+    Handles markdown code blocks, leading text, trailing text.
+    """
+    # 1) Strip markdown code fences
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        # Remove opening fence (```json or ```)
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+        cleaned = cleaned.strip()
+
+    # 2) Try direct parse
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+    except json.JSONDecodeError:
+        pass
+
+    # 3) Find the outermost [ ... ] bracket pair
+    start = cleaned.find("[")
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "[":
+                depth += 1
+            elif cleaned[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(cleaned[start:i+1])
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        break
+                    break
+
+    # 4) Try to find individual JSON objects with regex
+    objects = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned)
+    if objects:
+        results = []
+        for obj_str in objects:
+            try:
+                obj = json.loads(obj_str)
+                if isinstance(obj, dict) and "issue_id" in obj:
+                    results.append(obj)
+            except json.JSONDecodeError:
+                continue
+        if results:
+            return results
+
+    return None
 
 
 def analyze_security_pure(html: str) -> list:
@@ -460,8 +479,12 @@ def analyze_security_pure(html: str) -> list:
     return issues
 
 
-def analyze_competitors_pure(keyword: str, user_url: str, limit: int = 3) -> list:
-    """Cerca competitor organici usando Tavily con fallback su Google Serper."""
+def analyze_competitors_pure(keyword: str, user_url: str, limit: int = 3, seo_data: dict | None = None) -> list:
+    """Cerca competitor organici usando Tavily con fallback su Google Serper.
+    
+    Uses scraped page data (title, meta_description, keywords) to build
+    sector-specific search queries instead of generic "competitor" lookups.
+    """
     import requests
 
     if not keyword:
@@ -481,49 +504,101 @@ def analyze_competitors_pure(keyword: str, user_url: str, limit: int = 3) -> lis
         analyzed_urls.append(url)
         return True
 
-    def build_query(seed: str) -> str:
+    def _extract_sector_keywords(seo: dict) -> str:
+        """Extract meaningful sector terms from page metadata."""
+        parts = []
+        title = (seo.get("title") or "").strip()
+        if title:
+            # Use first meaningful chunk of title (skip brand suffixes after |/-)
+            clean_title = title.split("|")[0].split(" - ")[0].strip()
+            parts.append(clean_title)
+
+        meta_desc = (seo.get("meta_description") or "").strip()
+        if meta_desc:
+            # Take first sentence of meta description
+            first_sentence = meta_desc.split(".")[0].strip()
+            if len(first_sentence) > 15:
+                parts.append(first_sentence)
+
+        meta_kw = (seo.get("keywords") or "").strip()
+        if meta_kw:
+            # Use first 3 meta keywords
+            kw_list = [k.strip() for k in meta_kw.split(",") if k.strip()]
+            parts.append(" ".join(kw_list[:3]))
+
+        return " | ".join(parts) if parts else ""
+
+    def build_queries(seed: str, seo: dict | None) -> list[str]:
+        """Build multiple sector-specific queries from page context."""
+        queries = []
+        sector_info = _extract_sector_keywords(seo) if seo else ""
+
+        if sector_info:
+            # Primary: sector-aware query using actual page content
+            queries.append(f"{sector_info} migliori alternative concorrenti")
+            # Secondary: use the seed keyword + sector context
+            title_clean = (seo.get("title") or "").split("|")[0].split(" - ")[0].strip()
+            if title_clean and title_clean.lower() != seed.lower():
+                queries.append(f"{title_clean} competitors top sites")
+        
+        # Fallback: use the seed keyword with a sector-aware suffix
         seed_clean = " ".join(seed.split())
-        suffix = " competitor alternative similar sites"
-        return f"{seed_clean}{suffix}"
+        queries.append(f"siti simili a {seed_clean} stesse funzionalità")
+
+        return queries
     
     try:
-        query = build_query(keyword)
-        print(f"--- DEBUG: Trying Tavily for '{query}'... ---")
-        tavily_results = tavily_search.invoke(query)
+        queries = build_queries(keyword, seo_data)
+        for query in queries:
+            if len(results_data) >= limit:
+                break
+            logger.debug("Trying Tavily for '%s'...", query)
+            tavily_results = _get_tavily_search().invoke(query)
         
-        if isinstance(tavily_results, dict):
-            tavily_results = tavily_results.get("results", [])
-            
-        if tavily_results and isinstance(tavily_results, list):
-            for res in tavily_results:
-                url = res.get("url", "N/A")
-                content = res.get("content") or res.get("raw_content") or ""
+            if isinstance(tavily_results, dict):
+                tavily_results = tavily_results.get("results", [])
                 
-                if not is_new_competitor(url):
-                    continue
-                
-                results_data.append({
-                    "source": "tavily",
-                    "name": res.get("title", "No Title"),
-                    "url": url,
-                    "snippet": content[:200] + "..."
-                })
+            if tavily_results and isinstance(tavily_results, list):
+                for res in tavily_results:
+                    url = res.get("url", "N/A")
+                    content = res.get("content") or res.get("raw_content") or ""
+                    
+                    if not is_new_competitor(url):
+                        continue
+                    
+                    results_data.append({
+                        "source": "tavily",
+                        "name": res.get("title", "No Title"),
+                        "url": url,
+                        "snippet": content[:200] + "..."
+                    })
             
-            if results_data:
-                print(f"--- DEBUG: Tavily success! Found {len(results_data)} results. ---")
+        if results_data:
+            logger.info("Tavily success! Found %d results.", len(results_data))
     
     except Exception as e:
-        print(f"--- DEBUG: Tavily failed: {e} ---")
+        logger.warning("Tavily failed: %s", e)
 
     if not results_data:
-        print("--- DEBUG: Switching to Google Serper Direct Call... ---")
+        logger.info("Switching to Google Serper Direct Call...")
         api_key = os.getenv("SERPER_API_KEY")
         
         if api_key:
             try:
+                # Build a sector-aware Serper query too
+                serper_query = keyword
+                if seo_data:
+                    title = (seo_data.get("title") or "").split("|")[0].split(" - ")[0].strip()
+                    meta_kw = (seo_data.get("keywords") or "").strip()
+                    if meta_kw:
+                        kw_parts = [k.strip() for k in meta_kw.split(",") if k.strip()][:2]
+                        serper_query = f"{title} {' '.join(kw_parts)} alternative"
+                    elif title:
+                        serper_query = f"{title} concorrenti alternativi"
+                
                 url = "https://google.serper.dev/search"
                 payload = json.dumps({
-                    "q": keyword,
+                    "q": serper_query,
                     "gl": "it",
                     "hl": "it",
                     "num": 5
@@ -544,10 +619,10 @@ def analyze_competitors_pure(keyword: str, user_url: str, limit: int = 3) -> lis
                         "url": link,
                         "snippet": res.get("snippet", "")
                     })
-                print(f"--- DEBUG: Serper success! Found {len(results_data)} results. ---")
+                logger.info("Serper success! Found %d results.", len(results_data))
                 
             except Exception as e:
-                print(f"--- DEBUG: Serper failed: {e} ---")
+                logger.warning("Serper failed: %s", e)
     return results_data[:limit]
 
 

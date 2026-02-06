@@ -4,7 +4,6 @@ requests
 beautifulsoup4
 python-multipart
 lxml
-requests
 scikit-learn
 numpy
 scipy
@@ -14,3 +13,9 @@ httpx
 langchain
 langchain-openai
 langchain-tavily
+langchain-chroma
+chromadb
+tiktoken
+pydantic-settings
+slowapi
+PyMuPDF

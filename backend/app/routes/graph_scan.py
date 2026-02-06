@@ -6,9 +6,10 @@ GET /graph-scan/stream for SSE streaming results
 
 from fastapi import APIRouter, HTTPException
 from starlette.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.modules.graph_agent import GraphAuditOrchestrator
 from app.modules.seo_technical import analyze_sitemap
+from app.utils.validators import validate_url
 
 router = APIRouter()
 
@@ -17,6 +18,11 @@ class GraphScanRequest(BaseModel):
     url: str
     competitor_count: int = 3
     focus: str = "general"
+
+    @field_validator("url")
+    @classmethod
+    def validate_scan_url(cls, v: str) -> str:
+        return validate_url(v)
 
 
 

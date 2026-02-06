@@ -1,5 +1,9 @@
+import logging
+
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.llm_factory import get_shared_llm
+
+logger = logging.getLogger(__name__)
 
 EXPAND_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
@@ -39,5 +43,5 @@ def expand_content(page_data: dict, keywords: list):
         res = llm.invoke(messages)
         return res.content
     except Exception as e:
-        print(f"[ERROR] expand_content failed: {e}")
+        logger.error("expand_content failed: %s", e)
         return f"Content expansion failed: {str(e)[:200]}"

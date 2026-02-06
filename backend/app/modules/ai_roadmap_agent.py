@@ -1,5 +1,9 @@
+import logging
+
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.llm_factory import get_shared_llm
+
+logger = logging.getLogger(__name__)
 
 
 ROADMAP_PROMPT = ChatPromptTemplate.from_messages([
@@ -107,7 +111,7 @@ def generate_roadmap(errors: list, page_data: dict):
             errors = []
         error_list = "\n".join(f"- {str(e)[:200]}" for e in errors[:20])
         
-        print(f"[DEBUG] generate_roadmap: processing {len(errors)} errors")
+        logger.debug("generate_roadmap: processing %d errors", len(errors))
         
         messages = ROADMAP_PROMPT.format_messages(
             errors=error_list or "Nessun errore critico rilevato",
@@ -116,12 +120,12 @@ def generate_roadmap(errors: list, page_data: dict):
             meta_description=meta_desc
         )
         
-        print(f"[DEBUG] generate_roadmap: invoking LLM...")
+        logger.debug("generate_roadmap: invoking LLM...")
         res = llm.invoke(messages)
-        print(f"[DEBUG] generate_roadmap: LLM response length: {len(res.content)}")
+        logger.debug("generate_roadmap: LLM response length: %d", len(res.content))
         return res.content
     except Exception as e:
-        print(f"[ERROR] generate_roadmap EXCEPTION: {type(e).__name__}: {str(e)}")
+        logger.error("generate_roadmap EXCEPTION: %s: %s", type(e).__name__, str(e))
         import traceback
         traceback.print_exc()
         return f"Roadmap generation failed: {str(e)[:200]}" 

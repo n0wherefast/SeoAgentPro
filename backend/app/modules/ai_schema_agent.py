@@ -1,5 +1,9 @@
+import logging
+
 from langchain_core.prompts import ChatPromptTemplate
 from app.core.llm_factory import get_shared_llm
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
@@ -106,6 +110,6 @@ def generate_schema(page_data: dict):
         res = llm.invoke(messages)
         return res.content
     except Exception as e:
-        print(f"[ERROR] generate_schema failed: {e}")
+        logger.error("generate_schema failed: %s", e)
         return f"Schema generation failed: {str(e)[:200]}"
 

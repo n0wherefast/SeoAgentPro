@@ -4,8 +4,11 @@ Ported from SEO-AGENT/graph_agent.py (simplified version without langgraph depen
 """
 
 import json
+import logging
 from datetime import datetime
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 # Import tools from consolidated graph_tools module
 from app.modules.graph_tools import (
@@ -98,7 +101,7 @@ class GraphAuditOrchestrator:
         self._log("competitors", "Analisi competitor", "analyze_competitors_pure")
         title = seo_data.get("title", "")
         keyword = " ".join(title.split()[:3]) if title else "homepage"
-        competitors = analyze_competitors_pure(keyword, url, limit=competitor_count)
+        competitors = analyze_competitors_pure(keyword, url, limit=competitor_count, seo_data=seo_data)
         self.state["competitors"] = competitors
         self._log("competitors", f"Trovati {len(competitors)} competitor", "analyze_competitors_pure", status="done")
         
@@ -115,6 +118,21 @@ class GraphAuditOrchestrator:
         self._log("report", "Compilazione report", "llm")
         self._generate_report()
         self._log("report", "Report pronto", "llm", status="done")
+        
+        # 7. STORE IN RAG
+        try:
+            from app.modules.scan_store import store_scan_result
+            store_scan_result(
+                url=url,
+                scraped=self.state.get("seo_data", {}),
+                errors=self.state.get("issues", []),
+                seo_score={"score": self.state.get("seo_score", 0)},
+                technical=self.state.get("seo_data", {}),
+                ai_autofix=json.dumps(self.state.get("fixes", []), ensure_ascii=False)[:3000],
+                ai_roadmap=self.state.get("final_report_md", "")[:3000],
+            )
+        except Exception as e:
+            logger.error("Failed to store graph scan in RAG: %s", e)
         
         return self.state
 
@@ -188,16 +206,17 @@ class GraphAuditOrchestrator:
 
             # Send intermediate data events
             yield sse("scrape", self.state.get("seo_data", {}))
-            print(f"[DEBUG] Sending onpage_errors with {len(issues)} issues: {issues[:2] if issues else 'empty'}")
+            logger.debug("Sending onpage_errors with %d issues: %s", len(issues), issues[:2] if issues else "empty")
             yield sse("onpage_errors", issues)
             yield sse("seo_score", {"score": score})
 
             # Competitors
             self._log("competitors", "Analisi competitor", "analyze_competitors_pure")
             yield sse("log", self.state["logs"][-1])
-            title = self.state.get("seo_data", {}).get("title", "")
+            _seo_for_comp = self.state.get("seo_data", {})
+            title = _seo_for_comp.get("title", "")
             keyword = " ".join(title.split()[:3]) if title else "homepage"
-            competitors = analyze_competitors_pure(keyword, url, limit=competitor_count)
+            competitors = analyze_competitors_pure(keyword, url, limit=competitor_count, seo_data=_seo_for_comp)
             self.state["competitors"] = competitors
             self._log("competitors", f"Trovati {len(competitors)} competitor", "analyze_competitors_pure", status="done")
             yield sse("log", self.state["logs"][-1])
@@ -213,7 +232,7 @@ class GraphAuditOrchestrator:
                 self.state["fixes"] = fixes
             self._log("fixes", f"Fix generati: {len(self.state.get('fixes', []))}", "generate_fixes_pure", status="done")
             yield sse("log", self.state["logs"][-1])
-            print(f"[DEBUG] Sending fixes with {len(self.state.get('fixes', []))} fixes: {self.state.get('fixes', [])[:2] if self.state.get('fixes') else 'empty'}")
+            logger.debug("Sending fixes with %d fixes: %s", len(self.state.get("fixes", [])), self.state.get("fixes", [])[:2] if self.state.get("fixes") else "empty")
             yield sse("fixes", self.state.get("fixes", []))
 
             # Report
@@ -223,23 +242,43 @@ class GraphAuditOrchestrator:
             self._log("report", "Report pronto", "llm", status="done")
             yield sse("log", self.state["logs"][-1])
             report_content = self.state.get("final_report_md", "")
-            print(f"[DEBUG] Report generated, length: {len(report_content)}, first 200 chars: {report_content[:200]}")
+            logger.debug("Report generated, length: %d, first 200 chars: %s", len(report_content), report_content[:200])
             yield sse("report", {"content": report_content})
 
-            # Done
-            yield sse(
-                "done",
-                {
-                    "url": url,
-                    "seo_score": self.state.get("seo_score"),
-                    "seo_data": self.state.get("seo_data"),
-                    "issues": self.state.get("issues"),
-                    "fixes": self.state.get("fixes"),
-                    "competitors": self.state.get("competitors"),
-                    "report": self.state.get("final_report_md"),
-                    "sitemap_analysis": self.state.get("sitemap_analysis"),
-                },
-            )
+            # Store scan in ChromaDB for RAG
+            stored_scan_id = None
+            try:
+                from app.modules.scan_store import store_scan_result
+                from urllib.parse import urlparse
+                seo_data = self.state.get("seo_data", {})
+                stored_scan_id = store_scan_result(
+                    url=url,
+                    scraped=seo_data,
+                    errors=self.state.get("issues", []),
+                    seo_score={"score": self.state.get("seo_score", 0)},
+                    technical=seo_data,  # graph scan seo_data includes technical info
+                    ai_autofix=json.dumps(self.state.get("fixes", []), ensure_ascii=False)[:3000],
+                    ai_roadmap=report_content[:3000] if report_content else None,
+                )
+                self._log("storage", f"Scan stored in RAG: {stored_scan_id}", "scan_store", status="done")
+                yield sse("log", self.state["logs"][-1])
+            except Exception as e:
+                logger.error("Failed to store graph scan in RAG: %s", e)
+
+            # Done — include scan_id for frontend localStorage
+            done_payload = {
+                "url": url,
+                "seo_score": self.state.get("seo_score"),
+                "seo_data": self.state.get("seo_data"),
+                "issues": self.state.get("issues"),
+                "fixes": self.state.get("fixes"),
+                "competitors": self.state.get("competitors"),
+                "report": self.state.get("final_report_md"),
+                "sitemap_analysis": self.state.get("sitemap_analysis"),
+            }
+            if stored_scan_id:
+                done_payload["scan_id"] = stored_scan_id
+            yield sse("done", done_payload)
         except Exception as e:
             self._log("stream", f"Errore stream: {str(e)}", "run_audit_stream", status="error")
             if self.state.get("logs"):
@@ -568,7 +607,7 @@ class UnifiedScanOrchestrator(GraphAuditOrchestrator):
             except Exception as e:
                 import traceback
                 error_msg = f"Error in node {node}: {str(e)}"
-                print(f"❌ {error_msg}")
+                logger.error("%s", error_msg)
                 traceback.print_exc()
                 self._log(node, error_msg, status="error")
                 yield sse("log", self.state["logs"][-1])
@@ -583,7 +622,7 @@ class UnifiedScanOrchestrator(GraphAuditOrchestrator):
             "fixes": self.state.get("fixes"),
             "report": self.state.get("final_report_md")
         }
-        print(f"✅ Sending done event with data keys: {final_data.keys()}")
+        logger.info("Sending done event with data keys: %s", final_data.keys())
         yield sse("done", final_data)
     
     def _initialize_agents(self, options: dict) -> dict:
