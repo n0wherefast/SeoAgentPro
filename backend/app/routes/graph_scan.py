@@ -1,6 +1,7 @@
 """
-Graph Scan Endpoint - Advanced SEO audit workflow
+✅ ACTIVE: Graph Scan Endpoint - Advanced SEO audit workflow (PRIMARY for graph-scan)
 POST /graph-scan endpoint with comprehensive report generation
+GET /graph-scan/stream for SSE streaming results
 """
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,7 @@ class GraphScanRequest(BaseModel):
     url: str
     competitor_count: int = 3
     focus: str = "general"
+
 
 
 @router.post("/agent-scan")
@@ -62,10 +64,18 @@ async def agent_scan(data: GraphScanRequest):
 
 
 @router.get("/agent-scan/stream")
-
-@router.get("/agent-scan/stream")
+# @router.get("/graph-scan/stream")
 def agent_scan_stream(url: str, competitor_count: int = 3, focus: str = "general") -> StreamingResponse:
     orchestrator = GraphAuditOrchestrator()
     generator = orchestrator.run_audit_stream(url=url, competitor_count=competitor_count, focus=focus)
-    return StreamingResponse(generator, media_type="text/event-stream")
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 

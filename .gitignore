@@ -14,7 +14,8 @@ test.ipynb
 test_engines.py
 test_ranking.py
 test_competitor.py
-
+PROJECT_REPORT.md
+SOCIAL_MEDIA.md
 # Python
 __pycache__/
 *.pyc

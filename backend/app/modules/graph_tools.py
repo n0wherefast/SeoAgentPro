@@ -1,12 +1,14 @@
 # graph_tools.py (Refactored for LangGraph)
 # Adattato da SEO-AGENT/tools.py
 
+
 import os
 import re
 import json
 from collections import Counter
 from datetime import datetime
 import httpx
+import requests
 from bs4 import BeautifulSoup, Comment
 from dotenv import load_dotenv
 
@@ -14,7 +16,8 @@ from langchain_tavily import TavilySearch
 from langchain.tools import tool
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.core.llm_factory import get_shared_llm
-
+from urllib.parse import urljoin
+from app.modules.seo_technical import check_sitemap
 # =========================
 # CONFIGURAZIONE
 # =========================
@@ -36,18 +39,21 @@ tavily_search = TavilySearch(max_results=5)
 # HELPER FUNCTIONS
 # =========================
 
+# used in get_meta and get_property_meta
 def _text_clean(s: str) -> str:
     return " ".join((s or "").split()).strip()
 
+# used in extract_seo_elements_pure
 def _get_meta(soup: BeautifulSoup, name: str) -> str | None:
     tag = soup.find("meta", attrs={"name": name})
     return _text_clean(tag["content"]) if tag and tag.get("content") else None
 
+# used in extract_seo_elements_pure
 def _get_property_meta(soup: BeautifulSoup, prop: str) -> str | None:
     tag = soup.find("meta", attrs={"property": prop})
     return _text_clean(tag["content"]) if tag and tag.get("content") else None
 
-
+# used in analyze_competitors_pure
 def _domain_from_url(url: str) -> str:
     """Returns bare domain without scheme or path."""
     try:
@@ -60,10 +66,11 @@ def _domain_from_url(url: str) -> str:
 # CORE FUNCTIONS
 # ==========================================
 
+
 def fetch_page_playwright(url: str) -> str:
     """Scarica pagina renderizzando JS con Playwright (Headless Chrome)."""
-    if not PLAYWRIGHT_AVAILABLE:
-        return "ERROR: Playwright library not installed."
+    # Nota: Ho rimosso il check su PLAYWRIGHT_AVAILABLE per brevità, assumendo sia gestito
+    from playwright.sync_api import sync_playwright
         
     print(f"--- 🎭 Avvio Playwright per: {url} ---")
     try:
@@ -93,7 +100,7 @@ def fetch_page_playwright(url: str) -> str:
 def fetch_page_pure(url: str) -> str:
     """
     Approccio HTTPX prioritario (molto più veloce).
-    Playwright disabilitato di default (attiva solo se specificamente richiesto).
+    Se fallisce, prova Playwright (se disponibile).
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -105,33 +112,64 @@ def fetch_page_pure(url: str) -> str:
             resp = client.get(url, headers=headers)
             resp.raise_for_status()
             html_content = resp.text
-            
+
             if not html_content:
                 return f"ERROR: Pagina vuota {url}"
-            
+
             print(f"✅ Download HTTPX completato. Lunghezza: {len(html_content)}")
             return html_content
     except Exception as e:
-        print(f"❌ Fetch fallito: {e}")
+        print(f"❌ Fetch HTTPX fallito: {e}")
+
+        # Fallback con requests (più permissivo su alcuni siti)
+        try:
+            resp = requests.get(url, headers=headers, timeout=15, verify=False)
+            resp.raise_for_status()
+            html_content = resp.text
+            if html_content:
+                print(f"✅ Download requests completato. Lunghezza: {len(html_content)}")
+                return html_content
+        except Exception as re:
+            print(f"❌ Fetch requests fallito: {re}")
+
+        if PLAYWRIGHT_AVAILABLE:
+            print("🎭 Tentativo fallback Playwright...")
+            pw_html = fetch_page_playwright(url)
+            if pw_html and not pw_html.startswith("ERROR:"):
+                print(f"✅ Download Playwright completato. Lunghezza: {len(pw_html)}")
+                return pw_html
+            return f"ERROR: Impossibile scaricare {url}: {pw_html}"
         return f"ERROR: Impossibile scaricare {url}: {str(e)}"
 
 
-def extract_seo_elements_pure(html: str, url: str) -> dict:
-    """Estrae un set completo di dati SEO, Tecnici e di Contenuto."""
+
+def extract_seo_elements_pure(html: str, url: str, soup: BeautifulSoup, response=None) -> dict:
+    """
+    Estrae un set completo di dati SEO, Tecnici e di Contenuto.
+    AGGIORNAMENTO: Non effettua più richieste HTTP interne. Usa html/soup forniti.
+    """
+    if not soup or not isinstance(soup, BeautifulSoup):
+        soup = BeautifulSoup(html, "lxml")
+        
     if not html or not isinstance(html, str):
         return {"error": "Invalid HTML content provided."}
-
-    soup = BeautifulSoup(html, "lxml")
     
+    # Pulizia del soup (Attenzione: modifica l'oggetto soup passato per riferimento)
     for t in soup(["script", "style", "noscript", "svg", "path"]):
         t.decompose()
+        
     text_content = _text_clean(soup.get_text())
 
     title = soup.title.string.strip() if soup.title and soup.title.string else None
     desc = _get_meta(soup, "description")
     robots = _get_meta(soup, "robots")
     keywords = _get_meta(soup, "keywords")
-    canonical = soup.find("link", {"rel": "canonical"})['href'] if soup.find("link", {"rel": "canonical"}) else None
+
+    # CANONICAL
+    canonical = None
+    canonical_tag = soup.find("link", rel="canonical")
+    if canonical_tag:
+        canonical = canonical_tag.get("href")
 
     headings = {}
     for i in range(1, 7):
@@ -145,17 +183,61 @@ def extract_seo_elements_pure(html: str, url: str) -> dict:
         if src:
             images_data.append({"src": src, "has_alt": bool(alt), "alt": alt})
 
-    links = soup.find_all("a", href=True)
-    internal_links = []
-    external_links = []
-    base_domain = url.split("/")[2] if "//" in url else url
+    # PARAGRAFI
+    paragraphs = [p.get_text(strip=True) for p in soup.find_all("p")]
     
-    for l in links:
-        href = l['href']
-        if base_domain in href or href.startswith("/"):
-            internal_links.append(href)
-        elif href.startswith("http"):
-            external_links.append(href)
+    # LINKS
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        if href and not href.startswith("#") and not href.startswith("javascript:"):
+            links.append({
+                "href": urljoin(url, href),
+                "text": a.get_text(strip=True)[:100],
+                "is_external": not urljoin(url, href).startswith(url.split("/")[0] + "//" + url.split("/")[2])
+            })
+    internal_links = [l["href"] for l in links if not l["is_external"]]
+    external_links = [l["href"] for l in links if l["is_external"]]
+
+    # FAVICON
+    favicon_url = None
+    favicon_tag = soup.find("link", rel=lambda v: v and "icon" in v)
+    if favicon_tag:
+        favicon_url = favicon_tag.get("href")
+
+    # META VIEWPORT
+    meta_viewport = False
+    viewport_tag = soup.find("meta", attrs={"name": "viewport"})
+    if viewport_tag and viewport_tag.get("content"):
+        meta_viewport = True
+
+    # TWITTER CARD
+    twitter_card = {}
+    for tw_tag in soup.find_all("meta"):
+        name = tw_tag.get("name")
+        if name and name.startswith("twitter:"):
+            twitter_card[name] = tw_tag.get("content")
+
+    # HTML lang
+    html_lang = None
+    if soup.html and soup.html.get("lang"):
+        html_lang = soup.html.get("lang").strip()
+
+    # Structured data (JSON-LD)
+    # NOTA: Usiamo una nuova soup temporanea sull'HTML originale perché abbiamo fatto decompose degli script sopra
+    temp_soup = BeautifulSoup(html, "lxml")
+    structured_data_present = False
+    for s in temp_soup.find_all("script", attrs={"type": "application/ld+json"}):
+        if s.string and s.string.strip():
+            structured_data_present = True
+            break
+            
+    # COMPRESSIONE (Richiede l'oggetto response passato come argomento opzionale)
+    compression = False
+    if response and hasattr(response, 'headers'):
+        encoding = response.headers.get("Content-Encoding", "").lower()
+        if "gzip" in encoding or "br" in encoding or "deflate" in encoding:
+            compression = True
 
     og_data = {
         "og:title": _get_property_meta(soup, "og:title"),
@@ -163,7 +245,8 @@ def extract_seo_elements_pure(html: str, url: str) -> dict:
         "og:image": _get_property_meta(soup, "og:image"),
     }
 
-    scripts = len(soup.find_all("script"))
+    scripts = len(temp_soup.find_all("script")) # Usiamo temp_soup perché soup ha script rimossi
+    
     tech_stack = []
     html_raw = html.lower()
     if "/_next/" in html_raw: tech_stack.append("Next.js")
@@ -173,17 +256,30 @@ def extract_seo_elements_pure(html: str, url: str) -> dict:
     if "bootstrap" in html_raw: tech_stack.append("Bootstrap")
     if "jquery" in html_raw: tech_stack.append("jQuery")
 
-    return {
+    # Check for sitemap
+    sitemap_data = check_sitemap(url)
+    sitemap_url = sitemap_data.get("sitemap_url")
+
+    result = {
         "url": url,
         "title": title,
         "meta_description": desc,
         "robots": robots,
         "keywords": keywords,
         "canonical": canonical,
+        "favicon": favicon_url,
+        "sitemap_url": sitemap_url,
         "headings": headings,
+        "meta_viewport": meta_viewport,
         "word_count": len(text_content.split()),
         "text_ratio": len(text_content) / len(html) if len(html) > 0 else 0,
         "images": images_data,
+        "paragraphs": paragraphs,
+        "links": links,
+        "twitter_card": twitter_card,
+        "html_lang": html_lang,
+        "structured_data_present": structured_data_present,
+        "compression": compression,
         "images_count": len(images_data),
         "missing_alt_count": sum(1 for i in images_data if not i['has_alt']),
         "links_internal": len(internal_links),
@@ -195,6 +291,9 @@ def extract_seo_elements_pure(html: str, url: str) -> dict:
         "has_https": url.startswith("https"),
         "text_sample": text_content[:2000]
     }
+    print("[extract_seo_elements_pure] Dati estratti:", json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
 
 
 def detect_seo_issues_pure(seo_data: dict) -> list:
@@ -268,7 +367,7 @@ def generate_fixes_pure(
     parser = JsonOutputParser()
 
     prompt = PromptTemplate(
-        template="""Sei un Esperto SEO Tecnico e Sviluppatore Web Senior.
+        template="""Sei un Esperto SEO Tecnico e Sviluppatore Web Senior. 
         
         CONTESTO SITO:
         - URL Reale: {user_url}
@@ -311,13 +410,22 @@ def generate_fixes_pure(
     safe_sample = text_sample[:500].replace("\n", " ") if text_sample else "Nessun testo estratto."
 
     try:
-        return chain.invoke({
+        result = chain.invoke({
             "issues": issues_str,
             "user_url": user_url,
             "text_sample": safe_sample,
             "tech_stack": tech_stack,
         })
+        # Assicura che ritorna sempre una lista
+        if isinstance(result, list):
+            return result
+        elif isinstance(result, dict):
+            return [result]
+        else:
+            print(f"[ERROR] Unexpected fix result type: {type(result)}, value: {result}")
+            return []
     except Exception as e:
+        print(f"[ERROR] Exception in generate_fixes_pure: {e}")
         return [{
             "issue_id": "ai_error",
             "explanation": f"Errore generazione fix: {str(e)}",

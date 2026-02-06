@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import Response
 from app.routes.scan import router as scan_router
-from app.routes.autofix import router as autofix_router
 from app.routes.scan_full import router as scan_full_router
 from app.routes.graph_scan import router as graph_scan_router
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +34,11 @@ app.include_router(scan_router, prefix="/api")
 # app.include_router(autofix_router, prefix="/api")
 app.include_router(scan_full_router, prefix="/api")
 app.include_router(graph_scan_router, prefix="/api")
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
 
 # Catch-all OPTIONS for preflight CORS requests
 @app.options("/{full_path:path}")

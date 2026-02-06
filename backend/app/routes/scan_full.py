@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse, Response
-from app.modules.scraper import scrape_url
+from app.modules.scraper import smart_scrape_url
 from app.modules.seo_detection_unified import detect_seo_issues_unified
 from app.modules.seo_technical import run_technical_checks
 from app.modules.competitor.lighthouse_client import run_performance_engine
@@ -10,7 +10,6 @@ from app.modules.authority_engine import run_authority_engine
 from app.modules.seo_rules import SEOScoringEngine
 from app.modules.competitor.ranking import rank_competitor, compute_simple_scores
 from app.modules.competitor.radar import radar_payload
-from app.modules.pdf_report import generate_pdf_report
 import os
 import json
 import time
@@ -124,8 +123,14 @@ async def scan_full_stream(
             print(f"\n\n🔍🔍🔍 SCAN-FULL START: url={url}, competitor_url={competitor_url}, keywords={target_keywords}\n\n")
             
             # 1) SCRAPE
-            scraped = scrape_url(url)
+            scraped = smart_scrape_url(url)
             yield sse("scrape", scraped)
+
+            # 3) TECHNICAL
+            technical = run_technical_checks(scraped, url)
+            technical_errors = technical["technical_errors"]
+            # Unisci i campi tecnici a scraped per la detection
+            scraped.update(technical["technical_flags"])
 
             # 2) ONPAGE ERRORS (using unified detection)
             onpage_errors = detect_seo_issues_unified(scraped)
@@ -136,8 +141,7 @@ async def scan_full_stream(
                 keyword_presence = analyze_keyword_presence(scraped, target_keywords)
                 yield sse("keyword_analysis", keyword_presence)
 
-
-            # 3) TECHNICAL
+            yield sse("technical", technical)
             technical = run_technical_checks(scraped, url)
             technical_errors = technical["technical_errors"]
             yield sse("technical", technical)
@@ -229,7 +233,7 @@ async def scan_full_stream(
             if competitor_url:
                 logger.info(f"✅ COMPETITOR ANALYSIS STARTED for {competitor_url}")
                 print(f"\n\n✅✅✅ COMPETITOR ANALYSIS STARTED for {competitor_url}\n\n")
-                competitor_scraped = scrape_url(competitor_url)
+                competitor_scraped = smart_scrape_url(competitor_url)
                 
                 # Arricchisci scraped con dati aggiuntivi per ranking
                 enriched_scraped = {

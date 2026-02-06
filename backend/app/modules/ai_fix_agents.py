@@ -2,8 +2,11 @@ from app.core.llm_factory import get_shared_llm
 from app.core.cache_manager import hash_input
 from langchain_core.prompts import ChatPromptTemplate
 import os
+import json
+import re
 from dotenv import load_dotenv
 from functools import lru_cache
+from typing import List, Dict, Any
 
 load_dotenv()
 
@@ -163,3 +166,110 @@ def generate_autofix_report(errors: list, page_data: dict) -> str:
     except Exception as e:
         print(f"[ERROR] generate_autofix_report failed: {e}")
         return f"AutoFix report generation failed: {str(e)[:200]}"
+
+
+# ==================== GENERATE FIX SUGGESTIONS (STRUCTURED JSON) ====================
+
+FIX_SUGGESTIONS_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     """Sei un esperto SEO tecnico. Analizza i problemi SEO e genera soluzioni strutturate.
+
+Per OGNI problema, rispondi con un array JSON valido contenente oggetti con questa struttura esatta:
+{{
+    "issue_id": "nome breve del problema",
+    "explanation": "spiegazione di cosa fare e perché",
+    "code_snippet": "codice HTML/meta tag da aggiungere o modificare (se applicabile)"
+}}
+
+REGOLE:
+- Rispondi SOLO con l'array JSON, nessun testo prima o dopo
+- code_snippet può essere vuoto "" se non c'è codice da mostrare
+- Mantieni le spiegazioni brevi e pratiche
+- Massimo 10 fix"""
+    ),
+    ("user",
+     """PROBLEMI SEO RILEVATI:
+{issues}
+
+DATI PAGINA:
+- URL: {url}
+- Title: {title}
+- Description: {description}
+
+Genera l'array JSON con i fix."""
+    )
+])
+
+
+def generate_fix_suggestions(issues: List[Dict], page_data: Dict) -> List[Dict[str, Any]]:
+    """
+    Generate structured fix suggestions for SEO issues.
+    Returns a list of fix objects with issue_id, explanation, and code_snippet.
+    """
+    try:
+        if not issues:
+            return []
+        
+        # Limit issues to process
+        issues_to_process = issues[:15]
+        
+        # Format issues for prompt
+        issues_text = "\n".join([
+            f"- {issue.get('type', 'unknown')}: {issue.get('message', str(issue))[:200]}"
+            for issue in issues_to_process
+        ])
+        
+        # Extract page info
+        url = page_data.get("url", "N/A") if page_data else "N/A"
+        title = page_data.get("title", "N/A") if page_data else "N/A"
+        description = page_data.get("meta_description", "N/A") if page_data else "N/A"
+        
+        llm = get_shared_llm()
+        messages = FIX_SUGGESTIONS_PROMPT.format_messages(
+            issues=issues_text,
+            url=url,
+            title=title,
+            description=description
+        )
+        
+        result = llm.invoke(messages)
+        content = result.content.strip()
+        
+        # Extract JSON from response (handle markdown code blocks)
+        if "```json" in content:
+            content = content.split("```json")[1].split("```")[0].strip()
+        elif "```" in content:
+            content = content.split("```")[1].split("```")[0].strip()
+        
+        # Parse JSON
+        fixes = json.loads(content)
+        
+        # Validate structure
+        if not isinstance(fixes, list):
+            fixes = [fixes]
+        
+        validated_fixes = []
+        for fix in fixes:
+            validated_fixes.append({
+                "issue_id": fix.get("issue_id", "SEO Issue"),
+                "explanation": fix.get("explanation", ""),
+                "code_snippet": fix.get("code_snippet", "")
+            })
+        
+        print(f"[generate_fix_suggestions] Generated {len(validated_fixes)} fixes")
+        return validated_fixes
+        
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] generate_fix_suggestions JSON parse error: {e}")
+        # Fallback: generate simple fixes from issues
+        return [
+            {
+                "issue_id": issue.get("type", f"Issue {i+1}"),
+                "explanation": issue.get("message", str(issue))[:300],
+                "code_snippet": ""
+            }
+            for i, issue in enumerate(issues[:10])
+        ]
+    except Exception as e:
+        print(f"[ERROR] generate_fix_suggestions failed: {e}")
+        return []
