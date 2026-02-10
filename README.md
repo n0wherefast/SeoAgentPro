@@ -217,10 +217,9 @@ LLM_MODEL=gpt-4o-mini                # oppure: claude-sonnet-4-20250514, devstra
 # ── API Keys (configura quelli che usi) ──
 OPENAI_API_KEY=sk-your-key-here
 ANTHROPIC_API_KEY=sk-ant-your-key-here
-MISTRAL_API_KEY=your-mistral-key-here
 
 # ── Ollama (modelli locali, nessuna API key necessaria) ──
-OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_BASE_URL=http://localhost:
 
 # Opzionale — per competitor discovery
 TAVILY_API_KEY=tvly-your-key-here
@@ -271,41 +270,6 @@ Apri **[http://localhost:3000](http://localhost:3000)** nel browser.
 | `/api/chat` | POST | SSE Stream | **AI Chat con RAG** — streaming token-by-token |
 | `/api/chat/history?conversation_id=...` | GET | JSON | Cronologia conversazione |
 | `/api/chat/clear` | POST | JSON | Cancella cronologia conversazione |
-
-### Esempio Quick Scan
-
-```bash
-curl -N "http://127.0.0.1:8000/api/quick-scan?url=https://example.com"
-```
-
-### Esempio Full Scan con Competitor
-
-```bash
-curl -N "http://127.0.0.1:8000/api/scan-full/stream?url=https://mysite.com&competitor_url=https://competitor.com&keywords=seo,audit,tool"
-```
-
-### Esempio Agent Scan (POST)
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/agent-scan \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com", "competitor_count": 3, "focus": "general"}'
-```
-
-### Esempio AI Chat con RAG
-
-```bash
-curl -N -X POST http://127.0.0.1:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Come migliorare il mio LCP?", "conversation_id": "session1"}'
-```
-
-```bash
-# Chat con contesto di una scansione specifica
-curl -N -X POST http://127.0.0.1:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Analizza gli errori del mio sito", "scan_id": "abc123", "domain": "example.com"}'
-```
 
 ---
 
@@ -396,9 +360,9 @@ SEO-PRO utilizza un sistema RAG a due livelli per potenziare la qualità delle r
 
 ### Phase 1 — Knowledge Base RAG
 - **34 documenti SEO** indicizzati in ChromaDB (fondamenti, tecnica, contenuti, performance, sicurezza, strategie avanzate, strumenti)
-- **Indicizzazione automatica** all'avvio del server (idempotente)
+- **Indicizzazione automatica** all'avvio del server 
 - **Context augmentation** sui prompt di AI AutoFix e Fix Suggestions
-- **Embeddings**: OpenAI `text-embedding-3-small` (costo/efficacia ottimale)
+- **Embeddings**: OpenAI `text-embedding-3-small` 
 
 ### Phase 2 — Scan History RAG + AI Chat
 - **Ogni scansione** viene persistita in ChromaDB con sezioni granulari (overview, errors, technical, performance, authority, autofix, roadmap)
@@ -456,6 +420,7 @@ Distribuito sotto licenza **MIT**. Vedi [LICENSE](LICENSE) per maggiori informaz
 - [Recharts](https://recharts.org) — Libreria grafici React
 
 ---
+
 
 
 
