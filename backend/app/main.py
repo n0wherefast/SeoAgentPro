@@ -15,10 +15,13 @@ load_dotenv(env_path)
 
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
+from pydantic import BaseModel
+from typing import Optional
 from app.routes.scan import router as scan_router
 from app.routes.scan_full import router as scan_full_router
 from app.routes.graph_scan import router as graph_scan_router
 from app.routes.chat import router as chat_router
+from app.core.llm_factory import get_current_provider_info, set_provider
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -77,15 +80,43 @@ async def health():
         rag_status = f"ok ({len(collections)} collections)"
     except Exception:
         rag_status = "unavailable"
-    
+
+    llm_info = get_current_provider_info()
     return {
         "status": "ok",
         "version": "1.0.0",
-        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        "llm_provider": llm_info["current_provider"],
+        "llm_model": llm_info["current_model"],
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "mistral_configured": bool(os.getenv("MISTRAL_API_KEY")),
         "tavily_configured": bool(os.getenv("TAVILY_API_KEY")),
         "rag_status": rag_status,
     }
+
+
+# ── LLM Provider Configuration Endpoints ────────────────────────────────────
+
+class LLMConfigRequest(BaseModel):
+    provider: str
+    model: Optional[str] = None
+
+
+@app.get("/api/llm/config")
+async def get_llm_config():
+    """Return current LLM provider, model, and all available options."""
+    return get_current_provider_info()
+
+
+@app.post("/api/llm/config")
+async def update_llm_config(req: LLMConfigRequest):
+    """Switch LLM provider and/or model at runtime."""
+    try:
+        result = set_provider(req.provider, req.model)
+        return {"status": "ok", **result}
+    except ValueError as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail=str(e))
 
 # Catch-all OPTIONS for preflight CORS requests
 @app.options("/{full_path:path}")
