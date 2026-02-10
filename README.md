@@ -41,7 +41,6 @@ Progettata per **agenzie SEO**, **freelancer**, **developer** e **marketer**, SE
 | ⚡ **Quick Scan** | Analisi SEO rapida (~5s) con score, problemi on-page e metriche tecniche |
 | 🔍 **Full Scan** | Scansione completa con competitor analysis, keyword tracking e 5 report AI |
 | 🤖 **Advanced AI Audit** | Workflow orchestrato con scraping, competitor discovery, fix generation e report Markdown |
-| 🧠 **Autonomous Mode** | Agente ReAct AI-driven con loop adattivo e circuit breaker |
 | 📊 **Real-time Streaming** | SSE (Server-Sent Events) per risultati progressivi in tempo reale |
 | 🏆 **Competitor Intelligence** | Ranking, radar chart, keyword gap/overlap e clustering automatico |
 | 🛠️ **AI Fix Generation** | Fix tecnici con codice pronto, schema markup JSON-LD e content expansion |
@@ -415,6 +414,7 @@ I contributi sono benvenuti! Ecco come partecipare:
 - [Recharts](https://recharts.org) — Libreria grafici React
 
 ---
+
 
 
 
