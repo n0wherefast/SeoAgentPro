@@ -403,11 +403,6 @@ I contributi sono benvenuti! Ecco come partecipare:
 5. Apri una **Pull Request**
 
 
-
-## 📄 Licenza
-
-Distribuito sotto licenza **MIT**. Vedi [LICENSE](LICENSE) per maggiori informazioni.
-
 ---
 
 ##  Strumenti utilizzati 
@@ -420,6 +415,7 @@ Distribuito sotto licenza **MIT**. Vedi [LICENSE](LICENSE) per maggiori informaz
 - [Recharts](https://recharts.org) — Libreria grafici React
 
 ---
+
 
 
 
