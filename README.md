@@ -1,6 +1,6 @@
 ﻿<div align="center">
 
-# 🚀 SEO-PRO
+# 🚀 SEO-Agent
 
 ### AI-Powered SEO Audit Platform
 
@@ -456,6 +456,7 @@ Distribuito sotto licenza **MIT**. Vedi [LICENSE](LICENSE) per maggiori informaz
 - [Recharts](https://recharts.org) — Libreria grafici React
 
 ---
+
 
 
 
